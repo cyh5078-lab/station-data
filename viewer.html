@@ -2,65 +2,86 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>장비현황</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    body {
-      background: #000;
+    html, body {
+      width: 100%;
+      height: 100%;
       overflow: hidden;
-      width: 100vw;
-      height: 100vh;
+      background: #000;
     }
 
-    #frame-wrap {
+    #wrap {
       position: fixed;
-      top: 0; left: 0;
-      width: 100vh;   /* 세로↔가로 교체 */
-      height: 100vw;
-      transform-origin: top left;
-      transform: rotate(90deg) translateY(-100%);
+      top: 0;
+      left: 0;
+      overflow: hidden;
     }
 
     iframe {
-      width: 100%;
-      height: 100%;
       border: none;
-    }
-
-    /* 이미 가로 모드면 회전 안 함 */
-    @media (orientation: landscape) {
-      #frame-wrap {
-        width: 100vw;
-        height: 100vh;
-        transform: none;
-      }
+      display: block;
     }
   </style>
 </head>
 <body>
-
-<div id="frame-wrap">
-  <iframe id="content" src="" allowfullscreen></iframe>
-</div>
+  <div id="wrap">
+    <iframe id="content" src=""></iframe>
+  </div>
 
 <script>
-  // URL 파라미터에서 target 가져오기
-  const params = new URLSearchParams(location.search);
-  const target = params.get("url");
+  const params  = new URLSearchParams(location.search);
+  const target  = params.get("url");
+  const iframe  = document.getElementById("content");
+  const wrap    = document.getElementById("wrap");
 
   if (target) {
-    document.getElementById("content").src = decodeURIComponent(target);
-  } else {
-    document.body.innerHTML = "<p style='color:white;padding:20px'>URL 파라미터가 없습니다.</p>";
+    iframe.src = decodeURIComponent(target);
   }
 
-  // Screen Orientation API 지원 시 가로 강제
+  function applyLayout() {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+
+    if (W < H) {
+      // 세로 모드 → 90도 회전해서 가로로 보이게
+      // wrap 크기: 화면을 가득 채우도록 W↔H 교환
+      wrap.style.width    = H + "px";
+      wrap.style.height   = W + "px";
+      wrap.style.top      = "0px";
+      wrap.style.left     = "0px";
+      wrap.style.transform = `rotate(90deg) translateX(0) translateY(-${W}px)`;
+      wrap.style.transformOrigin = "top left";
+
+      iframe.style.width  = H + "px";
+      iframe.style.height = W + "px";
+    } else {
+      // 가로 모드 → 그냥 꽉 채우기
+      wrap.style.width     = W + "px";
+      wrap.style.height    = H + "px";
+      wrap.style.top       = "0px";
+      wrap.style.left      = "0px";
+      wrap.style.transform = "none";
+      wrap.style.transformOrigin = "top left";
+
+      iframe.style.width  = W + "px";
+      iframe.style.height = H + "px";
+    }
+  }
+
+  applyLayout();
+  window.addEventListener("resize", applyLayout);
+  window.addEventListener("orientationchange", () => {
+    setTimeout(applyLayout, 300);
+  });
+
+  // Screen Orientation API 가로 강제 (지원 기기)
   if (screen.orientation && screen.orientation.lock) {
     screen.orientation.lock("landscape").catch(() => {});
   }
 </script>
-
 </body>
 </html>
