@@ -2,86 +2,239 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>장비현황</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
-    html, body {
-      width: 100%;
-      height: 100%;
+    #outer {
+      position: fixed;
+      top: 0; left: 0;
       overflow: hidden;
-      background: #000;
     }
 
-    #wrap {
-      position: fixed;
-      top: 0;
-      left: 0;
-      overflow: hidden;
+    #inner {
+      position: absolute;
+      top: 0; left: 0;
+      transform-origin: 0 0;
+      will-change: transform;
     }
 
     iframe {
       border: none;
       display: block;
     }
+
+    /* 터치 이벤트를 가로채는 투명 오버레이 */
+    #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 999;
+      background: transparent;
+      /* 싱글탭은 iframe으로 통과, 멀티터치는 여기서 처리 */
+    }
   </style>
 </head>
 <body>
-  <div id="wrap">
-    <iframe id="content" src=""></iframe>
+
+<div id="outer">
+  <div id="inner">
+    <iframe id="content" src="" scrolling="yes"
+      allow="fullscreen"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation">
+    </iframe>
   </div>
+  <!-- 터치 전용 오버레이 (단순 탭은 iframe으로 전달) -->
+  <div id="overlay"></div>
+</div>
 
 <script>
-  const params  = new URLSearchParams(location.search);
-  const target  = params.get("url");
-  const iframe  = document.getElementById("content");
-  const wrap    = document.getElementById("wrap");
+// ── URL 세팅 ─────────────────────────────────────────────────────
+const params  = new URLSearchParams(location.search);
+const target  = params.get("url");
+const iframe  = document.getElementById("content");
+const outer   = document.getElementById("outer");
+const inner   = document.getElementById("inner");
+const overlay = document.getElementById("overlay");
 
-  if (target) {
-    iframe.src = decodeURIComponent(target);
+if (target) iframe.src = decodeURIComponent(target);
+
+// ── 레이아웃 (자동회전) ───────────────────────────────────────────
+let W, H, rotated;
+
+function applyLayout() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  rotated = W < H;  // 세로 모드면 회전
+
+  if (rotated) {
+    outer.style.width  = H + "px";
+    outer.style.height = W + "px";
+    outer.style.transform = `rotate(90deg) translateY(-${W}px)`;
+    outer.style.transformOrigin = "top left";
+    iframe.style.width  = H + "px";
+    iframe.style.height = W + "px";
+    overlay.style.width  = H + "px";
+    overlay.style.height = W + "px";
+  } else {
+    outer.style.width  = W + "px";
+    outer.style.height = H + "px";
+    outer.style.transform = "none";
+    iframe.style.width  = W + "px";
+    iframe.style.height = H + "px";
+    overlay.style.width  = W + "px";
+    overlay.style.height = H + "px";
   }
 
-  function applyLayout() {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
+  resetZoom();
+}
 
-    if (W < H) {
-      // 세로 모드 → 90도 회전해서 가로로 보이게
-      // wrap 크기: 화면을 가득 채우도록 W↔H 교환
-      wrap.style.width    = H + "px";
-      wrap.style.height   = W + "px";
-      wrap.style.top      = "0px";
-      wrap.style.left     = "0px";
-      wrap.style.transform = `rotate(90deg) translateX(0) translateY(-${W}px)`;
-      wrap.style.transformOrigin = "top left";
+window.addEventListener("resize", applyLayout);
+window.addEventListener("orientationchange", () => setTimeout(applyLayout, 300));
+applyLayout();
 
-      iframe.style.width  = H + "px";
-      iframe.style.height = W + "px";
+// ── 줌 상태 ───────────────────────────────────────────────────────
+let scale   = 1;
+let transX  = 0;
+let transY  = 0;
+const MIN_SCALE = 1;
+const MAX_SCALE = 5;
+
+function resetZoom() {
+  scale = 1; transX = 0; transY = 0;
+  inner.style.transform = "translate(0,0) scale(1)";
+}
+
+function applyZoom() {
+  inner.style.transform = `translate(${transX}px,${transY}px) scale(${scale})`;
+}
+
+// ── 핀치줌 & 드래그 ──────────────────────────────────────────────
+let startDist  = 0;
+let startScale = 1;
+let startMidX  = 0;
+let startMidY  = 0;
+let startTransX = 0;
+let startTransY = 0;
+
+// 단일 드래그용
+let dragStartX = 0;
+let dragStartY = 0;
+let isDragging = false;
+let isPinching = false;
+
+// 더블탭용
+let lastTapTime = 0;
+let lastTapX = 0;
+let lastTapY = 0;
+
+function dist(t1, t2) {
+  return Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+}
+function mid(t1, t2) {
+  return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+}
+
+overlay.addEventListener("touchstart", (e) => {
+  if (e.touches.length === 2) {
+    isPinching  = true;
+    isDragging  = false;
+    startDist   = dist(e.touches[0], e.touches[1]);
+    startScale  = scale;
+    const m     = mid(e.touches[0], e.touches[1]);
+    startMidX   = m.x;
+    startMidY   = m.y;
+    startTransX = transX;
+    startTransY = transY;
+    e.preventDefault();
+  } else if (e.touches.length === 1) {
+    isPinching  = false;
+    isDragging  = true;
+    dragStartX  = e.touches[0].clientX - transX;
+    dragStartY  = e.touches[0].clientY - transY;
+  }
+}, { passive: false });
+
+overlay.addEventListener("touchmove", (e) => {
+  if (e.touches.length === 2 && isPinching) {
+    const d      = dist(e.touches[0], e.touches[1]);
+    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale * (d / startDist)));
+    const m      = mid(e.touches[0], e.touches[1]);
+
+    // 핀치 중심 기준으로 이동량 보정
+    const scaleRatio = newScale / startScale;
+    transX = m.x - scaleRatio * (startMidX - startTransX);
+    transY = m.y - scaleRatio * (startMidY - startTransY);
+    scale  = newScale;
+
+    clampTrans();
+    applyZoom();
+    e.preventDefault();
+
+  } else if (e.touches.length === 1 && isDragging && scale > 1) {
+    transX = e.touches[0].clientX - dragStartX;
+    transY = e.touches[0].clientY - dragStartY;
+    clampTrans();
+    applyZoom();
+    e.preventDefault();
+  }
+}, { passive: false });
+
+overlay.addEventListener("touchend", (e) => {
+  if (e.touches.length < 2) isPinching = false;
+  if (e.touches.length === 0) isDragging = false;
+
+  // scale 1 미만이면 초기화
+  if (scale <= 1) resetZoom();
+
+  // 더블탭 → 줌 토글
+  const now = Date.now();
+  const touch = e.changedTouches[0];
+  if (now - lastTapTime < 280 &&
+      Math.abs(touch.clientX - lastTapX) < 30 &&
+      Math.abs(touch.clientY - lastTapY) < 30) {
+    if (scale > 1) {
+      resetZoom();
     } else {
-      // 가로 모드 → 그냥 꽉 채우기
-      wrap.style.width     = W + "px";
-      wrap.style.height    = H + "px";
-      wrap.style.top       = "0px";
-      wrap.style.left      = "0px";
-      wrap.style.transform = "none";
-      wrap.style.transformOrigin = "top left";
-
-      iframe.style.width  = W + "px";
-      iframe.style.height = H + "px";
+      scale  = 2.5;
+      transX = -(touch.clientX * (scale - 1));
+      transY = -(touch.clientY * (scale - 1));
+      clampTrans();
+      applyZoom();
     }
   }
+  lastTapTime = now;
+  lastTapX    = touch.clientX;
+  lastTapY    = touch.clientY;
+});
 
-  applyLayout();
-  window.addEventListener("resize", applyLayout);
-  window.addEventListener("orientationchange", () => {
-    setTimeout(applyLayout, 300);
-  });
+// 이동 범위 제한
+function clampTrans() {
+  const cw = (rotated ? H : W) * scale;
+  const ch = (rotated ? W : H) * scale;
+  const vw = rotated ? H : W;
+  const vh = rotated ? W : H;
+  const maxX = 0;
+  const minX = Math.min(0, vw - cw);
+  const maxY = 0;
+  const minY = Math.min(0, vh - ch);
+  transX = Math.min(maxX, Math.max(minX, transX));
+  transY = Math.min(maxY, Math.max(minY, transY));
+}
 
-  // Screen Orientation API 가로 강제 (지원 기기)
-  if (screen.orientation && screen.orientation.lock) {
-    screen.orientation.lock("landscape").catch(() => {});
-  }
+// 단일 탭은 iframe으로 전달 (클릭 가능하게)
+overlay.addEventListener("click", (e) => {
+  overlay.style.pointerEvents = "none";
+  setTimeout(() => { overlay.style.pointerEvents = "auto"; }, 100);
+});
+
+// Screen Orientation API
+if (screen.orientation && screen.orientation.lock) {
+  screen.orientation.lock("landscape").catch(() => {});
+}
 </script>
 </body>
 </html>
