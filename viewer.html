@@ -2,239 +2,184 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
   <title>장비현황</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
-    #outer {
-      position: fixed;
-      top: 0; left: 0;
+    html, body {
+      width: 100%;
+      height: 100%;
       overflow: hidden;
+      background: #000;
+      touch-action: manipulation;
     }
 
-    #inner {
-      position: absolute;
-      top: 0; left: 0;
-      transform-origin: 0 0;
-      will-change: transform;
+    #wrap {
+      position: fixed;
+      top: 0;
+      left: 0;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    /* 핀치줌 컨테이너 */
+    #zoom-container {
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x pan-y pinch-zoom;
     }
 
     iframe {
       border: none;
       display: block;
-    }
-
-    /* 터치 이벤트를 가로채는 투명 오버레이 */
-    #overlay {
-      position: absolute;
-      top: 0; left: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 999;
-      background: transparent;
-      /* 싱글탭은 iframe으로 통과, 멀티터치는 여기서 처리 */
+      transform-origin: top left;
     }
   </style>
 </head>
 <body>
-
-<div id="outer">
-  <div id="inner">
-    <iframe id="content" src="" scrolling="yes"
-      allow="fullscreen"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-top-navigation">
-    </iframe>
+  <div id="wrap">
+    <div id="zoom-container">
+      <iframe id="content" src=""
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+      ></iframe>
+    </div>
   </div>
-  <!-- 터치 전용 오버레이 (단순 탭은 iframe으로 전달) -->
-  <div id="overlay"></div>
-</div>
 
 <script>
-// ── URL 세팅 ─────────────────────────────────────────────────────
-const params  = new URLSearchParams(location.search);
-const target  = params.get("url");
-const iframe  = document.getElementById("content");
-const outer   = document.getElementById("outer");
-const inner   = document.getElementById("inner");
-const overlay = document.getElementById("overlay");
+  const params   = new URLSearchParams(location.search);
+  const target   = params.get("url");
+  const iframe   = document.getElementById("content");
+  const wrap     = document.getElementById("wrap");
+  const zoomCont = document.getElementById("zoom-container");
 
-if (target) iframe.src = decodeURIComponent(target);
-
-// ── 레이아웃 (자동회전) ───────────────────────────────────────────
-let W, H, rotated;
-
-function applyLayout() {
-  W = window.innerWidth;
-  H = window.innerHeight;
-  rotated = W < H;  // 세로 모드면 회전
-
-  if (rotated) {
-    outer.style.width  = H + "px";
-    outer.style.height = W + "px";
-    outer.style.transform = `rotate(90deg) translateY(-${W}px)`;
-    outer.style.transformOrigin = "top left";
-    iframe.style.width  = H + "px";
-    iframe.style.height = W + "px";
-    overlay.style.width  = H + "px";
-    overlay.style.height = W + "px";
-  } else {
-    outer.style.width  = W + "px";
-    outer.style.height = H + "px";
-    outer.style.transform = "none";
-    iframe.style.width  = W + "px";
-    iframe.style.height = H + "px";
-    overlay.style.width  = W + "px";
-    overlay.style.height = H + "px";
+  if (target) {
+    iframe.src = decodeURIComponent(target);
   }
 
-  resetZoom();
-}
+  function applyLayout() {
+    const W = window.innerWidth;
+    const H = window.innerHeight;
 
-window.addEventListener("resize", applyLayout);
-window.addEventListener("orientationchange", () => setTimeout(applyLayout, 300));
-applyLayout();
+    if (W < H) {
+      // 세로 모드 → 90도 회전
+      wrap.style.width         = H + "px";
+      wrap.style.height        = W + "px";
+      wrap.style.transform     = `rotate(90deg) translateY(-${W}px)`;
+      wrap.style.transformOrigin = "top left";
 
-// ── 줌 상태 ───────────────────────────────────────────────────────
-let scale   = 1;
-let transX  = 0;
-let transY  = 0;
-const MIN_SCALE = 1;
-const MAX_SCALE = 5;
+      zoomCont.style.width  = H + "px";
+      zoomCont.style.height = W + "px";
 
-function resetZoom() {
-  scale = 1; transX = 0; transY = 0;
-  inner.style.transform = "translate(0,0) scale(1)";
-}
-
-function applyZoom() {
-  inner.style.transform = `translate(${transX}px,${transY}px) scale(${scale})`;
-}
-
-// ── 핀치줌 & 드래그 ──────────────────────────────────────────────
-let startDist  = 0;
-let startScale = 1;
-let startMidX  = 0;
-let startMidY  = 0;
-let startTransX = 0;
-let startTransY = 0;
-
-// 단일 드래그용
-let dragStartX = 0;
-let dragStartY = 0;
-let isDragging = false;
-let isPinching = false;
-
-// 더블탭용
-let lastTapTime = 0;
-let lastTapX = 0;
-let lastTapY = 0;
-
-function dist(t1, t2) {
-  return Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
-}
-function mid(t1, t2) {
-  return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
-}
-
-overlay.addEventListener("touchstart", (e) => {
-  if (e.touches.length === 2) {
-    isPinching  = true;
-    isDragging  = false;
-    startDist   = dist(e.touches[0], e.touches[1]);
-    startScale  = scale;
-    const m     = mid(e.touches[0], e.touches[1]);
-    startMidX   = m.x;
-    startMidY   = m.y;
-    startTransX = transX;
-    startTransY = transY;
-    e.preventDefault();
-  } else if (e.touches.length === 1) {
-    isPinching  = false;
-    isDragging  = true;
-    dragStartX  = e.touches[0].clientX - transX;
-    dragStartY  = e.touches[0].clientY - transY;
-  }
-}, { passive: false });
-
-overlay.addEventListener("touchmove", (e) => {
-  if (e.touches.length === 2 && isPinching) {
-    const d      = dist(e.touches[0], e.touches[1]);
-    const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, startScale * (d / startDist)));
-    const m      = mid(e.touches[0], e.touches[1]);
-
-    // 핀치 중심 기준으로 이동량 보정
-    const scaleRatio = newScale / startScale;
-    transX = m.x - scaleRatio * (startMidX - startTransX);
-    transY = m.y - scaleRatio * (startMidY - startTransY);
-    scale  = newScale;
-
-    clampTrans();
-    applyZoom();
-    e.preventDefault();
-
-  } else if (e.touches.length === 1 && isDragging && scale > 1) {
-    transX = e.touches[0].clientX - dragStartX;
-    transY = e.touches[0].clientY - dragStartY;
-    clampTrans();
-    applyZoom();
-    e.preventDefault();
-  }
-}, { passive: false });
-
-overlay.addEventListener("touchend", (e) => {
-  if (e.touches.length < 2) isPinching = false;
-  if (e.touches.length === 0) isDragging = false;
-
-  // scale 1 미만이면 초기화
-  if (scale <= 1) resetZoom();
-
-  // 더블탭 → 줌 토글
-  const now = Date.now();
-  const touch = e.changedTouches[0];
-  if (now - lastTapTime < 280 &&
-      Math.abs(touch.clientX - lastTapX) < 30 &&
-      Math.abs(touch.clientY - lastTapY) < 30) {
-    if (scale > 1) {
-      resetZoom();
+      iframe.style.width  = H + "px";
+      iframe.style.height = W + "px";
     } else {
-      scale  = 2.5;
-      transX = -(touch.clientX * (scale - 1));
-      transY = -(touch.clientY * (scale - 1));
-      clampTrans();
-      applyZoom();
+      // 가로 모드
+      wrap.style.width         = W + "px";
+      wrap.style.height        = H + "px";
+      wrap.style.transform     = "none";
+      wrap.style.transformOrigin = "top left";
+
+      zoomCont.style.width  = W + "px";
+      zoomCont.style.height = H + "px";
+
+      iframe.style.width  = W + "px";
+      iframe.style.height = H + "px";
     }
   }
-  lastTapTime = now;
-  lastTapX    = touch.clientX;
-  lastTapY    = touch.clientY;
-});
 
-// 이동 범위 제한
-function clampTrans() {
-  const cw = (rotated ? H : W) * scale;
-  const ch = (rotated ? W : H) * scale;
-  const vw = rotated ? H : W;
-  const vh = rotated ? W : H;
-  const maxX = 0;
-  const minX = Math.min(0, vw - cw);
-  const maxY = 0;
-  const minY = Math.min(0, vh - ch);
-  transX = Math.min(maxX, Math.max(minX, transX));
-  transY = Math.min(maxY, Math.max(minY, transY));
-}
+  applyLayout();
+  window.addEventListener("resize", applyLayout);
+  window.addEventListener("orientationchange", () => setTimeout(applyLayout, 300));
 
-// 단일 탭은 iframe으로 전달 (클릭 가능하게)
-overlay.addEventListener("click", (e) => {
-  overlay.style.pointerEvents = "none";
-  setTimeout(() => { overlay.style.pointerEvents = "auto"; }, 100);
-});
+  // ── 핀치줌 구현 ──────────────────────────────────────────────
+  let scale      = 1;
+  let lastScale  = 1;
+  let originX    = 0;
+  let originY    = 0;
+  let posX       = 0;
+  let posY       = 0;
+  let lastPosX   = 0;
+  let lastPosY   = 0;
+  let isPinching = false;
 
-// Screen Orientation API
-if (screen.orientation && screen.orientation.lock) {
-  screen.orientation.lock("landscape").catch(() => {});
-}
+  function getDistance(t1, t2) {
+    const dx = t1.clientX - t2.clientX;
+    const dy = t1.clientY - t2.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function getMidpoint(t1, t2) {
+    return {
+      x: (t1.clientX + t2.clientX) / 2,
+      y: (t1.clientY + t2.clientY) / 2,
+    };
+  }
+
+  let startDist  = 0;
+  let startScale = 1;
+
+  wrap.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+      isPinching = true;
+      startDist  = getDistance(e.touches[0], e.touches[1]);
+      startScale = scale;
+      const mid  = getMidpoint(e.touches[0], e.touches[1]);
+      originX    = mid.x;
+      originY    = mid.y;
+      e.preventDefault();
+    } else if (e.touches.length === 1) {
+      isPinching = false;
+      lastPosX   = e.touches[0].clientX - posX;
+      lastPosY   = e.touches[0].clientY - posY;
+    }
+  }, { passive: false });
+
+  wrap.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2 && isPinching) {
+      const dist  = getDistance(e.touches[0], e.touches[1]);
+      scale       = Math.min(Math.max(startScale * (dist / startDist), 1), 5);
+      applyTransform();
+      e.preventDefault();
+    } else if (e.touches.length === 1 && scale > 1) {
+      posX = e.touches[0].clientX - lastPosX;
+      posY = e.touches[0].clientY - lastPosY;
+      applyTransform();
+      e.preventDefault();
+    }
+  }, { passive: false });
+
+  wrap.addEventListener("touchend", (e) => {
+    if (e.touches.length < 2) isPinching = false;
+    // 1배로 돌아오면 위치 초기화
+    if (scale <= 1) {
+      scale = 1; posX = 0; posY = 0;
+      applyTransform();
+    }
+  });
+
+  // 더블탭 → 원래 크기로
+  let lastTap = 0;
+  wrap.addEventListener("touchend", (e) => {
+    const now = Date.now();
+    if (now - lastTap < 300) {
+      scale = 1; posX = 0; posY = 0;
+      applyTransform();
+    }
+    lastTap = now;
+  });
+
+  function applyTransform() {
+    iframe.style.transformOrigin = `${originX}px ${originY}px`;
+    iframe.style.transform = `translate(${posX}px, ${posY}px) scale(${scale})`;
+  }
+
+  // Screen Orientation API
+  if (screen.orientation && screen.orientation.lock) {
+    screen.orientation.lock("landscape").catch(() => {});
+  }
 </script>
 </body>
 </html>
